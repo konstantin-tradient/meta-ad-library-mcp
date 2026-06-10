@@ -22,33 +22,41 @@ search_ads("dental implants", country="DE", limit=50, fetch_reach=True)
 - **Google Chrome** installed (the server launches your real Chrome for a clean
   fingerprint). No Chrome? Set `META_ADS_CHANNEL=""` to use Playwright's bundled Chromium.
 
-## Install
+## Install ([uv](https://docs.astral.sh/uv/) — recommended)
 
 ```bash
 git clone https://github.com/konstantin-tradient/meta-ad-library-mcp.git
 cd meta-ad-library-mcp
-
-# Windows
-py     -m pip install -r requirements.txt && py     -m playwright install chromium
-# macOS / Linux
-python3 -m pip install -r requirements.txt && python3 -m playwright install chromium
+uv sync                          # creates an isolated venv from pyproject.toml
+uv run playwright install chromium
 ```
 
 Quick local check (no MCP client needed):
 
 ```bash
-PYTHONPATH=. py smoke.py "dental implants" DE        # live: search + reach
-PYTHONPATH=. py -m pytest meta_ads_mcp/tests/ -q     # offline parser test
+uv run python smoke.py "dental implants" DE     # live: search + reach
+uv run --extra dev pytest -q                    # offline parser test
 ```
 
+<details><summary>Without uv (plain pip)</summary>
+
+```bash
+py -m pip install -r requirements.txt && py -m playwright install chromium   # Windows
+python3 -m pip install -r requirements.txt && python3 -m playwright install chromium
+```
+Then run/register with `py -m meta_ads_mcp.server` + `--env PYTHONPATH=<dir>`.
+</details>
+
 ## Connect it to Claude
+
+The MCP command is just `uv run --directory <clone> meta-ads-mcp` — uv auto-syncs the
+venv, so there's nothing to install globally.
 
 ### Claude Code (CLI)
 
 ```bash
 # --scope user = available in every project. Use the clone's ABSOLUTE path.
-claude mcp add meta-ads --scope user \
-  --env "PYTHONPATH=/abs/path/to/meta-ad-library-mcp" -- py -m meta_ads_mcp.server
+claude mcp add meta-ads --scope user -- uv run --directory /abs/path/to/meta-ad-library-mcp meta-ads-mcp
 ```
 Restart Claude Code, then ask: *"search the Meta Ad Library for dental implants in Germany."*
 
@@ -56,13 +64,12 @@ Restart Claude Code, then ask: *"search the Meta Ad Library for dental implants 
 
 Edit `claude_desktop_config.json`
 (Windows: `%APPDATA%\Claude\`, macOS: `~/Library/Application Support/Claude/`) and add
-under `mcpServers`:
+under `mcpServers` (use the **full path to `uv`** — `which uv` / `where uv`):
 
 ```jsonc
 "meta-ads": {
-  "command": "C:\\path\\to\\python.exe",   // macOS/Linux: "python3"
-  "args": ["-m", "meta_ads_mcp.server"],
-  "env": { "PYTHONPATH": "C:\\abs\\path\\to\\meta-ad-library-mcp" }
+  "command": "/full/path/to/uv",
+  "args": ["run", "--directory", "/abs/path/to/meta-ad-library-mcp", "meta-ads-mcp"]
 }
 ```
 Fully **quit and reopen** Claude Desktop (tray → Quit). The tools appear in the chat.
