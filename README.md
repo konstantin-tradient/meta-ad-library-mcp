@@ -1,61 +1,122 @@
 # Meta Ad Library MCP
 
-Search the Meta (Facebook) Ad Library by keyword and get each ad's **description +
-EU reach** (per-country/age/gender breakdown) — the data the official Ad Library
-API does NOT expose for commercial ads.
+An [MCP](https://modelcontextprotocol.io) server that searches the **Meta (Facebook)
+Ad Library** by keyword and returns each ad's **advertiser, full ad copy, and EU
+reach** (per‑country / age / gender breakdown) — the data the official Ad Library
+API does **not** expose for commercial ads.
 
-## How it works
+It works by driving the *public* Ad Library like a real user (Playwright + your real
+Chrome) and reading the page's own data — no API key, no login required.
 
-Drives the public Ad Library like a real user (Playwright) and reads the data the
-page itself receives. The reliability tricks (all confirmed 2026-06-10):
+```
+search_ads("dental implants", country="DE", limit=50, fetch_reach=True)
+  → 50 advertisers + ad copy + EU reach, ranked
+```
 
-- **Residential IP required.** Meta `rd_challenge`-403s datacenter IPs (e.g. AWS).
-  Run on a residential connection, or behind a residential proxy.
-- **rd_challenge is a soft gate** — the first hit 403s but sets a clearance cookie;
-  we warm the session (homepage + library landing) and **retry**, which clears it.
-- **List = structured GraphQL, not DOM scraping.** `search_ads` reads the ad data
-  from the page's own payload — the SSR'd first page (embedded JSON) +
-  `AdLibrarySearchPaginationQuery` captured on scroll — so advertiser + body_text
-  are reliable for every ad (incl. image/video), and it paginates to 50+.
-- **Reach lives in `AdLibraryV3AdDetailsQuery`**, which only fires when you click an
-  ad's "See ad details" on the *keyword search* page — so reach is a separate,
-  on-demand call (`get_ad_details`) that re-finds the ad and clicks it.
+## Requirements
+
+- **A residential internet connection.** Meta `rd_challenge`‑403s datacenter IPs
+  (AWS/GCP/VPS) within seconds. On a normal home/office machine it just works; on a
+  server you must set `RESIDENTIAL_PROXY_URL` (see [Hosting](#hosting--remote-claudeai)).
+- **Python 3.10+**
+- **Google Chrome** installed (the server launches your real Chrome for a clean
+  fingerprint). No Chrome? Set `META_ADS_CHANNEL=""` to use Playwright's bundled Chromium.
+
+## Install
+
+```bash
+git clone https://github.com/konstantin-tradient/meta-ad-library-mcp.git
+cd meta-ad-library-mcp
+
+# Windows
+py     -m pip install -r requirements.txt && py     -m playwright install chromium
+# macOS / Linux
+python3 -m pip install -r requirements.txt && python3 -m playwright install chromium
+```
+
+Quick local check (no MCP client needed):
+
+```bash
+PYTHONPATH=. py smoke.py "dental implants" DE        # live: search + reach
+PYTHONPATH=. py -m pytest meta_ads_mcp/tests/ -q     # offline parser test
+```
+
+## Connect it to Claude
+
+### Claude Code (CLI)
+
+```bash
+# --scope user = available in every project. Use the clone's ABSOLUTE path.
+claude mcp add meta-ads --scope user \
+  --env "PYTHONPATH=/abs/path/to/meta-ad-library-mcp" -- py -m meta_ads_mcp.server
+```
+Restart Claude Code, then ask: *"search the Meta Ad Library for dental implants in Germany."*
+
+### Claude Desktop (Mac/Windows app)
+
+Edit `claude_desktop_config.json`
+(Windows: `%APPDATA%\Claude\`, macOS: `~/Library/Application Support/Claude/`) and add
+under `mcpServers`:
+
+```jsonc
+"meta-ads": {
+  "command": "C:\\path\\to\\python.exe",   // macOS/Linux: "python3"
+  "args": ["-m", "meta_ads_mcp.server"],
+  "env": { "PYTHONPATH": "C:\\abs\\path\\to\\meta-ad-library-mcp" }
+}
+```
+Fully **quit and reopen** Claude Desktop (tray → Quit). The tools appear in the chat.
+
+> **claude.ai (web)** can't run a local server — it only connects to *remote* MCP
+> servers (public HTTPS URL + auth). See [Hosting](#hosting--remote-claudeai).
 
 ## Tools
 
-- `search_ads(keyword, country="ALL", limit=20)` →
-  `{count, ads:[{library_id, page_name, status, body_text, cta, link_url,
-  start_date, end_date, versions}]}`. Fast; supports `limit=50+`. Use an **EU
-  country** (e.g. `DE`) to find ads that also carry EU-reach data.
-- `get_ad_details(keyword, library_id, country="ALL")` →
-  `{library_id, eu_total_reach, uk_total_reach, gender_audience, age_audience,
-  location_audience, reach_breakdown:[{country, age_gender:[{age_range, male,
-  female, unknown}]}]}`. Ads not delivered in the EU have `eu_total_reach=null`.
-- `session_status()` → `{ready, egress_ip, proxy, last_challenge}`.
+| Tool | Returns |
+|---|---|
+| `search_ads(keyword, country="ALL", limit=20, fetch_reach=False)` | `{count, ads:[{library_id, page_name, status, body_text, cta, link_url, start_date, end_date, versions, eu_total_reach?, uk_total_reach?, reach_breakdown?}]}` |
+| `get_ad_details(keyword, library_id, country="ALL")` | `{library_id, eu_total_reach, uk_total_reach, gender_audience, age_audience, location_audience, reach_breakdown:[{country, age_gender:[{age_range, male, female, unknown}]}]}` |
+| `session_status()` | `{ready, egress_ip, proxy, last_challenge}` |
 
-## Run / install
+- Use an **EU country code** (`DE`, `FR`, `NL`…) to surface ads that carry EU‑reach
+  data. Ads not delivered in the EU have `eu_total_reach = null` (Meta's design).
+- `fetch_reach=True` clicks every result in one warm session (~3–4s/ad) — great for
+  ≤50; otherwise list fast and pull reach per‑ad with `get_ad_details`.
 
-```bash
-py -m pip install -r requirements.txt
-py -m playwright install chromium
-PYTHONPATH=. py smoke.py "dental implants" DE      # local smoke test
-PYTHONPATH=. py -m pytest meta_ads_mcp/tests/ -q   # parser test (offline fixture)
-```
+## How it works
 
-Add to Claude Code (stdio):
+- **rd_challenge is a soft gate** — the first request 403s but sets a clearance
+  cookie; the server warms the session (homepage → library landing) and **retries**,
+  which clears it. (This is what made headless work without a paid API.)
+- **List = the page's own GraphQL, not DOM scraping.** `search_ads` reads the SSR'd
+  first page (embedded JSON) + `AdLibrarySearchPaginationQuery` captured on scroll,
+  so advertiser + ad copy are reliable for every ad (incl. image/video), and it
+  paginates to 50+.
+- **Reach** comes from `AdLibraryV3AdDetailsQuery`, which only fires when you click an
+  ad's "See ad details" on the search page — so reach is gathered by clicking, either
+  in batch (`fetch_reach=True`) or per‑ad (`get_ad_details`).
 
-```bash
-claude mcp add meta-ads --scope local \
-  --env "PYTHONPATH=<abs path to this dir>" -- py -m meta_ads_mcp.server
-```
+## Environment variables
 
-Env: `RESIDENTIAL_PROXY_URL` (http://user:pass@host:port) to route via a proxy;
-`META_ADS_HEADFUL=1` to show the browser; `META_ADS_CHANNEL` (default `chrome`);
-`META_ADS_PROFILE` (persistent profile dir, default `~/.meta-ads-profile`).
+| Var | Default | Purpose |
+|---|---|---|
+| `RESIDENTIAL_PROXY_URL` | – | `http://user:pass@host:port` — route Meta traffic through a residential proxy (required on datacenter hosts) |
+| `META_ADS_CHANNEL` | `chrome` | Browser channel; set `""` to use Playwright's bundled Chromium |
+| `META_ADS_HEADFUL` | – | `1` to show the browser window (default headless) |
+| `META_ADS_PROFILE` | `~/.meta-ads-profile` | Persistent browser profile dir (keeps the warm session) |
 
-## Hosting note
+## Hosting / remote (claude.ai)
 
-Runs **locally on a residential IP for free** (interactive use). To host 24/7 on a
-datacenter box (e.g. the EC2 automation host) it needs a **residential proxy** via
-`RESIDENTIAL_PROXY_URL` — no free way around the datacenter-IP block. See the plan
-at `~/.claude/plans/i-would-like-to-gleaming-sunrise.md`.
+Runs **locally on a residential IP for free** — ideal for interactive use. To reach
+it from **claude.ai (web)** or run it **24/7 on a server**, you need:
+
+1. **HTTP transport** — switch `mcp.run()` to `streamable-http` in `server.py`.
+2. **A public HTTPS endpoint** with auth (claude.ai connectors expect OAuth).
+3. **Residential egress** — set `RESIDENTIAL_PROXY_URL`; there is no free way around
+   the datacenter‑IP `rd_challenge`.
+
+## Legal
+
+This automates access to a **public transparency tool** for competitive research. It
+nonetheless falls under Meta's automated‑access terms — use a disposable/burner
+account if you host it, pace conservatively, and don't hammer. Provided as‑is.
