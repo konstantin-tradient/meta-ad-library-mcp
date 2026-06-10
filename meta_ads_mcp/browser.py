@@ -190,12 +190,21 @@ class AdLibrary:
                 pass
 
     async def search(self, keyword: str, country: str = "ALL", limit: int = 10,
-                     fetch_reach: bool = False) -> dict[str, Any]:
+                     fetch_reach: bool = False, min_reach: int = 0,
+                     stop_after_below: int = 5) -> dict[str, Any]:
         """Search the Ad Library and return up to `limit` ads with advertiser +
         description, sourced from the page's structured GraphQL (SSR first page +
         AdLibrarySearchPaginationQuery on scroll) — robust for image/video ads.
+
         With fetch_reach=True, also clicks each result in the SAME warm session to
-        capture EU reach (one navigation, N paced clicks)."""
+        capture EU reach (one navigation, N paced clicks).
+
+        Meta exposes NO reach/impressions in the list and sorts only by impressions
+        (descending) — which is ~monotonic with reach. So when min_reach>0 we walk
+        that order and STOP once `stop_after_below` consecutive ads fall below the
+        threshold (the rest, lower in the order, are assumed below too), then return
+        only ads at/above min_reach, sorted by reach desc. This is the only viable
+        "top-by-reach" strategy without clicking all (often 800+) results."""
         async with self._lock:
             from urllib.parse import quote
             self._page_edges = []
@@ -222,7 +231,8 @@ class AdLibrary:
 
                 absorb(ssr_edges)
                 # scroll to trigger AdLibrarySearchPaginationQuery until we have `limit`
-                for _ in range(20):
+                max_scrolls = max(20, limit // 8 + 5)
+                for _ in range(max_scrolls):
                     if len(ads) >= limit:
                         break
                     captured = self._page_edges
@@ -235,18 +245,32 @@ class AdLibrary:
                 absorb(self._page_edges)  # final drain
                 ads = ads[:limit]
 
+                reach_meta: dict[str, Any] = {}
                 if fetch_reach:
-                    await self._enrich_reach(page, ads)
+                    reach_meta = await self._enrich_reach(
+                        page, ads, min_reach=min_reach, stop_after_below=stop_after_below)
+                    # keep only ads with a measurable reach; apply min_reach filter
+                    ads = [a for a in ads if a.get("eu_total_reach") is not None]
+                    if min_reach > 0:
+                        ads = [a for a in ads if (a.get("eu_total_reach") or 0) >= min_reach]
+                    ads.sort(key=lambda a: a.get("eu_total_reach") or 0, reverse=True)
 
-                return {"keyword": keyword, "country": country,
-                        "count": len(ads), "ads": ads}
+                out = {"keyword": keyword, "country": country, "count": len(ads), "ads": ads}
+                if fetch_reach:
+                    out["reach_meta"] = reach_meta
+                return out
             finally:
                 await page.close()
 
-    async def _enrich_reach(self, page, ads: list[dict[str, Any]]) -> None:
-        """In the already-loaded search page, click each ad's "See ad details"
-        and merge its EU reach. One warm session, paced clicks — far cheaper than
-        re-searching per ad."""
+    async def _enrich_reach(self, page, ads: list[dict[str, Any]], min_reach: int = 0,
+                            stop_after_below: int = 5) -> dict[str, Any]:
+        """Click each ad (in Meta's impressions order) and merge its EU reach.
+        When min_reach>0, stop after `stop_after_below` consecutive ads below the
+        threshold — the order is ~reach-descending, so the rest are assumed below.
+        Returns {checked, stopped_early, ...} so the caller can report the heuristic."""
+        checked = 0
+        consecutive_below = 0
+        stopped_early = False
         for ad in ads:
             lid = ad.get("library_id")
             if not lid:
@@ -255,7 +279,7 @@ class AdLibrary:
             try:
                 marked = await page.evaluate(_MARK_DETAIL_BTN_JS, lid)
                 if not marked:
-                    continue
+                    continue  # card virtualised out of DOM — skip, don't count
                 await page.click('[data-meta-ads-detail="1"]', timeout=8000, force=True)
             except Exception:  # noqa: BLE001
                 continue
@@ -263,11 +287,13 @@ class AdLibrary:
                 if self._last_details is not None:
                     break
                 await asyncio.sleep(0.3)
-            if self._last_details is not None:
+            got_detail = self._last_details is not None
+            if got_detail:
                 r = parse_ad_details(self._last_details)
                 ad["eu_total_reach"] = r["eu_total_reach"]
                 ad["uk_total_reach"] = r["uk_total_reach"]
                 ad["reach_breakdown"] = r["reach_breakdown"]
+                checked += 1
             try:
                 await page.keyboard.press("Escape")
                 await page.evaluate(
@@ -277,6 +303,17 @@ class AdLibrary:
                 await asyncio.sleep(0.7 + random.uniform(0, 0.6))
             except Exception:  # noqa: BLE001
                 pass
+            # early-stop streak (only meaningful with a threshold + a real detail)
+            if min_reach > 0 and got_detail:
+                if (ad.get("eu_total_reach") or 0) < min_reach:
+                    consecutive_below += 1
+                    if consecutive_below >= stop_after_below:
+                        stopped_early = True
+                        break
+                else:
+                    consecutive_below = 0
+        return {"checked": checked, "stopped_early": stopped_early,
+                "min_reach": min_reach, "stop_after_below": stop_after_below}
 
     async def get_ad_details(self, keyword: str, library_id: str,
                              country: str = "ALL") -> dict[str, Any]:

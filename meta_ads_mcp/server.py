@@ -40,7 +40,8 @@ mcp = FastMCP("meta-ads", lifespan=_lifespan)
 
 @mcp.tool()
 async def search_ads(keyword: str, country: str = "ALL", limit: int = 20,
-                     fetch_reach: bool = False) -> dict:
+                     fetch_reach: bool = False, min_reach: int = 0,
+                     stop_after_below: int = 5) -> dict:
     """Search the Meta Ad Library by keyword — returns the advertiser +
     description for each ad (supports loading 50+). Fast by default.
 
@@ -48,17 +49,28 @@ async def search_ads(keyword: str, country: str = "ALL", limit: int = 20,
         keyword: free-text query (e.g. "dental implants").
         country: ISO-2 country code (e.g. "DE", "AE"); use an EU country to find
                  ads with EU-reach data. "ALL" = no country filter.
-        limit: max ads to return (paginates by scrolling; 50 is fine).
-        fetch_reach: if True, also clicks each result in one warm session to add
-                     eu_total_reach + breakdown (slower: ~3-4s/ad; use for ≤50).
+        limit: max ads to scan (paginates by scrolling). With min_reach this is the
+               safety ceiling — set it high (e.g. 300) and let min_reach stop it.
+        fetch_reach: if True, clicks each result to add eu_total_reach + breakdown
+                     (slower: ~3-4s/ad).
+        min_reach: only return ads with EU reach ≥ this. Meta has NO reach sort and
+                   hides impressions, but its impressions order is ~reach-descending,
+                   so results come back reach-sorted and scanning stops early (see
+                   stop_after_below) instead of clicking all 800+ ads. 0 = no filter.
+        stop_after_below: with min_reach>0, stop after this many CONSECUTIVE ads
+                          below the threshold (absorbs frequency noise; raise it for
+                          multi-advertiser keywords where the order is noisier).
     Returns: {keyword, country, count, ads:[{library_id, page_name, status,
               body_text, cta, link_url, start_date, end_date, versions,
-              eu_total_reach?, uk_total_reach?, reach_breakdown?}]}.
-    Ads not delivered in the EU have eu_total_reach=null (Meta's design).
-    For a single ad's reach later, use get_ad_details(keyword, library_id, country).
+              eu_total_reach?, uk_total_reach?, reach_breakdown?}],
+              reach_meta?:{checked, stopped_early, min_reach, stop_after_below}}.
+              With fetch_reach, ads are sorted by eu_total_reach descending.
+    Ads not delivered in the EU have eu_total_reach=null and are dropped when
+    fetching reach. For a single ad later: get_ad_details(keyword, library_id, country).
     """
     await _lib.start()  # lazy: launches + warms Chromium on first call
-    return await _lib.search(keyword, country=country, limit=limit, fetch_reach=fetch_reach)
+    return await _lib.search(keyword, country=country, limit=limit, fetch_reach=fetch_reach,
+                             min_reach=min_reach, stop_after_below=stop_after_below)
 
 
 @mcp.tool()

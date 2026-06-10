@@ -100,7 +100,7 @@ Fully **quit and reopen** Claude Desktop (tray → Quit). The tools appear in th
 
 | Tool | Returns |
 |---|---|
-| `search_ads(keyword, country="ALL", limit=20, fetch_reach=False)` | `{count, ads:[{library_id, page_name, status, body_text, cta, link_url, start_date, end_date, versions, eu_total_reach?, uk_total_reach?, reach_breakdown?}]}` |
+| `search_ads(keyword, country="ALL", limit=20, fetch_reach=False, min_reach=0, stop_after_below=5)` | `{count, ads:[{library_id, page_name, status, body_text, cta, link_url, start_date, end_date, versions, eu_total_reach?, uk_total_reach?, reach_breakdown?}], reach_meta?}` |
 | `get_ad_details(keyword, library_id, country="ALL")` | `{library_id, eu_total_reach, uk_total_reach, gender_audience, age_audience, location_audience, reach_breakdown:[{country, age_gender:[{age_range, male, female, unknown}]}]}` |
 | `session_status()` | `{ready, egress_ip, proxy, last_challenge}` |
 
@@ -108,6 +108,23 @@ Fully **quit and reopen** Claude Desktop (tray → Quit). The tools appear in th
   data. Ads not delivered in the EU have `eu_total_reach = null` (Meta's design).
 - `fetch_reach=True` clicks every result in one warm session (~3–4s/ad) — great for
   ≤50; otherwise list fast and pull reach per‑ad with `get_ad_details`.
+
+### Top-ads-by-reach (`min_reach`)
+
+Meta exposes **no reach or impressions in the list** and offers **no reach sort** —
+the only number is `eu_total_reach`, behind a click per ad. But Meta *orders* the
+list by impressions (descending), which is ~monotonic with reach. So:
+
+```text
+search_ads("biosila.bg", country="BG", limit=300, fetch_reach=True, min_reach=1000)
+  → only ads with EU reach ≥ 1000, sorted reach-desc
+```
+
+It walks Meta's order, clicking for reach, and **stops after `stop_after_below`
+consecutive ads fall below `min_reach`** (the rest, lower in the order, are assumed
+below too) — so you get the top‑by‑reach set after ~40 clicks instead of 800+.
+`reach_meta` reports `{checked, stopped_early}`. Raise `stop_after_below` for
+multi‑advertiser keywords where impressions‑order is noisier vs. reach.
 
 ## How it works
 
