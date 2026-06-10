@@ -47,7 +47,26 @@ python3 -m pip install -r requirements.txt && python3 -m playwright install chro
 Then run/register with `py -m meta_ads_mcp.server` + `--env PYTHONPATH=<dir>`.
 </details>
 
-## Connect it to Claude
+## No-clone install (uvx)
+
+To *use* it on a machine without cloning, `uvx` fetches + builds straight from GitHub.
+Install Chromium once, then register the connector:
+
+```bash
+# one-time: download the browser into the shared cache
+uvx --from playwright playwright install chromium
+
+# Claude Code — pin a tag so deps don't drift
+claude mcp add meta-ads --scope user -- \
+  uvx --from git+https://github.com/konstantin-tradient/meta-ad-library-mcp.git@v0.1.0 meta-ads-mcp
+```
+(Claude Desktop: `"command": "/full/path/to/uvx"`, `"args": ["--from", "git+https://github.com/konstantin-tradient/meta-ad-library-mcp.git@v0.1.0", "meta-ads-mcp"]`.)
+
+Use this for machines that only *run* the tool. To **develop** it, clone + `uv run`
+below (so your local edits apply and `uv.lock` pins deps). If you hit a
+"browser not found" error, re-run `playwright install chromium`.
+
+## Connect it to Claude (from a clone)
 
 The MCP command is just `uv run --directory <clone> meta-ads-mcp` — uv auto-syncs the
 venv, so there's nothing to install globally.
